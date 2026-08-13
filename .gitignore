@@ -1,0 +1,39 @@
+# Local development / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PHP / server logs
+*.log
+
+# Environment and secret files
+.env
+.env.*
+!.env.example
+
+# Local configuration / credentials
+secrets.php
+config.local.php
+
+# Streamlit / Python files if accidentally added
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Arduino generated files
+*.hex
+*.elf
+*.bin
+
+# Temporary files
+*.tmp
+*.bak
+*.tmp.*
