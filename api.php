@@ -1,32 +1,29 @@
 <?php
 /*
- * ESP-SWITCH3 - api.php
+ * ESP-SWITCH3 / ESP-SWITCH4 - FINAL api.php
  * Stores controllers.last_seen in India Standard Time (IST).
- * IST = UTC + 5 hours 30 minutes.
  *
- * active = 1 means registered/active; it does NOT mean ONLINE.
- * ONLINE/OFFLINE is determined from last_seen by index.php.
+ * active = 1 means REGISTERED/ACTIVE, not ONLINE.
+ * ONLINE/OFFLINE is determined from last_seen.
  */
-
 require_once "db.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
-$action = $_GET["action"] ?? "";
+$action        = $_GET["action"] ?? "";
 $controller_id = trim($_GET["controller_id"] ?? "");
-$device_token = trim($_GET["device_token"] ?? "");
+$device_token  = trim($_GET["device_token"] ?? "");
 
 if ($controller_id === "") {
     echo json_encode(["success"=>false,"message"=>"controller_id is missing"]);
     exit;
 }
-
 if ($device_token === "") {
     echo json_encode(["success"=>false,"message"=>"device_token is missing"]);
     exit;
 }
 
-/* Verify Controller ID and Device Token */
+/* Verify controller ID and token */
 $stmt = $conn->prepare(
     "SELECT controller_id, device_token, active
      FROM controllers
@@ -62,9 +59,8 @@ if ((int)$controller["active"] !== 1) {
 
 /*
  * IMPORTANT:
- * Store LAST_SEEN as IST directly in the DATETIME column.
- * This makes MySQL Workbench/TiDB show the same time as the
- * India-time value used by the website.
+ * Store LAST_SEEN directly as IST.
+ * UTC 06:59:33 becomes IST 12:29:33.
  */
 $stmt = $conn->prepare(
     "UPDATE controllers
@@ -75,7 +71,7 @@ $stmt->bind_param("s", $controller_id);
 $stmt->execute();
 $stmt->close();
 
-/* ESP8266 requests D1-D8 */
+/* GET D1-D8 */
 if ($action === "get") {
 
     $stmt = $conn->prepare(
@@ -116,10 +112,10 @@ if ($action === "get") {
     exit;
 }
 
-/* Optional SET command */
+/* SET one pin */
 if ($action === "set") {
 
-    $pin = strtoupper(trim($_GET["pin"] ?? ""));
+    $pin   = strtoupper(trim($_GET["pin"] ?? ""));
     $value = isset($_GET["value"]) ? (int)$_GET["value"] : -1;
 
     $allowed = ["D1","D2","D3","D4","D5","D6","D7","D8"];
