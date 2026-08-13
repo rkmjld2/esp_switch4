@@ -1,29 +1,32 @@
 <?php
 /*
- * ESP-SWITCH3 / ESP-SWITCH4 - FINAL api.php
+ * ESP-SWITCH3 - api.php
  * Stores controllers.last_seen in India Standard Time (IST).
+ * IST = UTC + 5 hours 30 minutes.
  *
- * active = 1 means REGISTERED/ACTIVE, not ONLINE.
- * ONLINE/OFFLINE is determined from last_seen.
+ * active = 1 means registered/active; it does NOT mean ONLINE.
+ * ONLINE/OFFLINE is determined from last_seen by index.php.
  */
+
 require_once "db.php";
 
 header("Content-Type: application/json; charset=UTF-8");
 
-$action        = $_GET["action"] ?? "";
+$action = $_GET["action"] ?? "";
 $controller_id = trim($_GET["controller_id"] ?? "");
-$device_token  = trim($_GET["device_token"] ?? "");
+$device_token = trim($_GET["device_token"] ?? "");
 
 if ($controller_id === "") {
     echo json_encode(["success"=>false,"message"=>"controller_id is missing"]);
     exit;
 }
+
 if ($device_token === "") {
     echo json_encode(["success"=>false,"message"=>"device_token is missing"]);
     exit;
 }
 
-/* Verify controller ID and token */
+/* Verify Controller ID and Device Token */
 $stmt = $conn->prepare(
     "SELECT controller_id, device_token, active
      FROM controllers
@@ -59,19 +62,22 @@ if ((int)$controller["active"] !== 1) {
 
 /*
  * IMPORTANT:
- * Store LAST_SEEN directly as IST.
- * UTC 06:59:33 becomes IST 12:29:33.
+ * Store LAST_SEEN as IST directly in the DATETIME column.
+ * This makes MySQL Workbench/TiDB show the same time as the
+ * India-time value used by the website.
  */
-$stmt = $conn->prepare(
-    "UPDATE controllers
-     SET last_seen = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 HOUR 30 MINUTE)
-     WHERE controller_id = ?"
-);
-$stmt->bind_param("s", $controller_id);
-$stmt->execute();
-$stmt->close();
+ 
+ 
+ 
+date_default_timezone_set("Asia/Kolkata");
+$india_time = date("Y-m-d H:i:s");
 
-/* GET D1-D8 */
+$stmt = $conn->prepare(
+    "UPDATE controllers SET last_seen = ? WHERE controller_id = ?"
+);
+$stmt->bind_param("ss", $india_time, $controller_id);
+
+/* ESP8266 requests D1-D8 */
 if ($action === "get") {
 
     $stmt = $conn->prepare(
@@ -112,10 +118,10 @@ if ($action === "get") {
     exit;
 }
 
-/* SET one pin */
+/* Optional SET command */
 if ($action === "set") {
 
-    $pin   = strtoupper(trim($_GET["pin"] ?? ""));
+    $pin = strtoupper(trim($_GET["pin"] ?? ""));
     $value = isset($_GET["value"]) ? (int)$_GET["value"] : -1;
 
     $allowed = ["D1","D2","D3","D4","D5","D6","D7","D8"];
