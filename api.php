@@ -1,4 +1,13 @@
 <?php
+/*
+ * ESP-SWITCH3 - api.php
+ * Stores controllers.last_seen in India Standard Time (IST).
+ * IST = UTC + 5 hours 30 minutes.
+ *
+ * active = 1 means registered/active; it does NOT mean ONLINE.
+ * ONLINE/OFFLINE is determined from last_seen by index.php.
+ */
+
 require_once "db.php";
 
 header("Content-Type: application/json; charset=UTF-8");
@@ -37,10 +46,7 @@ if ($result->num_rows === 0) {
 $controller = $result->fetch_assoc();
 $stmt->close();
 
-if (!hash_equals(
-    (string)$controller["device_token"],
-    (string)$device_token
-)) {
+if (!hash_equals((string)$controller["device_token"], (string)$device_token)) {
     echo json_encode(["success"=>false,"message"=>"Invalid device token"]);
     exit;
 }
@@ -56,12 +62,13 @@ if ((int)$controller["active"] !== 1) {
 
 /*
  * IMPORTANT:
- * The new esp_switch3 project does NOT use controller_status.
- * Last communication time is stored in controllers.last_seen.
+ * Store LAST_SEEN as IST directly in the DATETIME column.
+ * This makes MySQL Workbench/TiDB show the same time as the
+ * India-time value used by the website.
  */
 $stmt = $conn->prepare(
     "UPDATE controllers
-     SET last_seen = CURRENT_TIMESTAMP
+     SET last_seen = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 HOUR 30 MINUTE)
      WHERE controller_id = ?"
 );
 $stmt->bind_param("s", $controller_id);
@@ -142,9 +149,6 @@ if ($action === "set") {
     exit;
 }
 
-echo json_encode([
-    "success"=>false,
-    "message"=>"Invalid action"
-]);
+echo json_encode(["success"=>false,"message"=>"Invalid action"]);
 exit;
 ?>
