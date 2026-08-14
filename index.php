@@ -1,17 +1,22 @@
+```php
 <?php
 /*
- * ESP-SWITCH4 - index.php
+ * ESP-SWITCH4
+ * Stage 1 - Controller Selection
  *
- * STAGE 1
+ * Database tables:
  *
- * - Select one controller at a time.
- * - Works with ESP0001, ESP0002, ESP0003, etc.
- * - Does NOT use customer_id.
- * - Displays customer_name.
- * - Displays ONLINE/OFFLINE.
- * - Displays last_seen in India Time.
- * - Displays D1-D8 for selected controller.
- * - Controls D1-D8 only for selected controller.
+ * controllers:
+ *   id
+ *   controller_id
+ *   device_token
+ *   customer_name
+ *   active
+ *   last_seen
+ *
+ * esp_control:
+ *   controller_id
+ *   D1 ... D8
  */
 
 require_once "db.php";
@@ -20,7 +25,7 @@ date_default_timezone_set("Asia/Kolkata");
 
 
 /* =========================================================
-   HELPER FUNCTION
+   HELPER
    ========================================================= */
 
 function h($value)
@@ -34,17 +39,17 @@ function h($value)
 
 
 /* =========================================================
-   ONLINE TIME LIMIT
+   ONLINE LIMIT
    =========================================================
-   Controller is considered ONLINE if it contacted the
-   server within the previous 15 seconds.
+   Controller is considered online when last_seen is within
+   the last 60 seconds.
    ========================================================= */
 
-$online_seconds = 15;
+$ONLINE_LIMIT = 60;
 
 
 /* =========================================================
-   GET SELECTED CONTROLLER
+   SELECTED CONTROLLER
    ========================================================= */
 
 $controller_id = trim(
@@ -53,10 +58,7 @@ $controller_id = trim(
 
 
 /* =========================================================
-   GET ALL CONTROLLERS
-   =========================================================
-   IMPORTANT:
-   No customer_id is used here.
+   GET CONTROLLER LIST
    ========================================================= */
 
 $controllers = [];
@@ -86,7 +88,7 @@ if ($result) {
 
 
 /* =========================================================
-   SELECT FIRST CONTROLLER INITIALLY
+   IF NO CONTROLLER SELECTED, USE FIRST CONTROLLER
    ========================================================= */
 
 if (
@@ -101,7 +103,7 @@ if (
 
 
 /* =========================================================
-   GET SELECTED CONTROLLER DETAILS
+   GET SELECTED CONTROLLER
    ========================================================= */
 
 $selected = null;
@@ -127,7 +129,8 @@ if ($controller_id !== "") {
 
     $stmt->execute();
 
-    $result = $stmt->get_result();
+    $result =
+        $stmt->get_result();
 
     if ($result->num_rows > 0) {
 
@@ -142,44 +145,10 @@ if ($controller_id !== "") {
 
 
 /* =========================================================
-   ONLINE / OFFLINE
+   DEFAULT D1-D8
    ========================================================= */
 
-$online = false;
-
-if (
-    $selected &&
-    !empty($selected["last_seen"])
-) {
-
-    $last_seen_timestamp =
-        strtotime($selected["last_seen"]);
-
-    $current_timestamp =
-        time();
-
-    if (
-        $last_seen_timestamp !== false &&
-        ($current_timestamp -
-         $last_seen_timestamp)
-         <= $online_seconds &&
-        ($current_timestamp -
-         $last_seen_timestamp)
-         >= 0
-    ) {
-
-        $online = true;
-
-    }
-
-}
-
-
-/* =========================================================
-   DEFAULT D1-D8 VALUES
-   ========================================================= */
-
-$d = [
+$pins = [
 
     "D1" => 0,
     "D2" => 0,
@@ -194,7 +163,7 @@ $d = [
 
 
 /* =========================================================
-   GET D1-D8 FOR SELECTED CONTROLLER
+   READ D1-D8 OF SELECTED CONTROLLER
    ========================================================= */
 
 if ($selected) {
@@ -226,13 +195,17 @@ if ($selected) {
 
     if ($result->num_rows > 0) {
 
-        $pin_data =
+        $row =
             $result->fetch_assoc();
 
-        $d = array_merge(
-            $d,
-            $pin_data
-        );
+        for ($i = 1; $i <= 8; $i++) {
+
+            $pin = "D" . $i;
+
+            $pins[$pin] =
+                (int)$row[$pin];
+
+        }
 
     }
 
@@ -242,7 +215,7 @@ if ($selected) {
 
 
 /* =========================================================
-   PROCESS ON/OFF BUTTON
+   PROCESS BUTTONS
    ========================================================= */
 
 if (
@@ -250,66 +223,36 @@ if (
     $selected
 ) {
 
-    $pin = strtoupper(
-        trim($_POST["pin"] ?? "")
-    );
-
-    $value =
-        isset($_POST["value"])
-        ? (int)$_POST["value"]
-        : -1;
-
-
-    /* Only D1-D8 are permitted. */
-
-    $allowed = [
-
-        "D1",
-        "D2",
-        "D3",
-        "D4",
-        "D5",
-        "D6",
-        "D7",
-        "D8"
-
-    ];
-
-
-    if (
-        in_array(
-            $pin,
-            $allowed,
-            true
-        ) &&
-        (
-            $value === 0 ||
-            $value === 1
-        )
-    ) {
-
-
-        /*
-         * Update ONLY the selected controller.
-         */
-
-        $sql = "
-            UPDATE esp_control
-            SET `$pin` = ?
-            WHERE controller_id = ?
-        ";
-
-
-        $stmt =
-            $conn->prepare($sql);
-
-
-        $stmt->bind_param(
-            "is",
-            $value,
-            $selected["controller_id"]
+    $action =
+        strtoupper(
+            trim($_POST["action"] ?? "")
         );
 
+
+    /* =====================================================
+       ALL ON
+       ===================================================== */
+
+    if ($action === "ALL_ON") {
+
+        $stmt = $conn->prepare("
+            UPDATE esp_control
+            SET
+                D1 = 1,
+                D2 = 1,
+                D3 = 1,
+                D4 = 1,
+                D5 = 1,
+                D6 = 1,
+                D7 = 1,
+                D8 = 1
+            WHERE controller_id = ?
+        ");
+
+        $stmt->bind_param(
+            "s",
+            $selected["controller_id"]
+        );
 
         $stmt->execute();
 
@@ -318,9 +261,92 @@ if (
     }
 
 
-    /*
-     * Return to the selected controller.
-     */
+    /* =====================================================
+       ALL OFF
+       ===================================================== */
+
+    elseif ($action === "ALL_OFF") {
+
+        $stmt = $conn->prepare("
+            UPDATE esp_control
+            SET
+                D1 = 0,
+                D2 = 0,
+                D3 = 0,
+                D4 = 0,
+                D5 = 0,
+                D6 = 0,
+                D7 = 0,
+                D8 = 0
+            WHERE controller_id = ?
+        ");
+
+        $stmt->bind_param(
+            "s",
+            $selected["controller_id"]
+        );
+
+        $stmt->execute();
+
+        $stmt->close();
+
+    }
+
+
+    /* =====================================================
+       INDIVIDUAL D1-D8
+       ===================================================== */
+
+    elseif (
+        preg_match(
+            '/^D[1-8]$/',
+            $action
+        )
+    ) {
+
+        $value =
+            isset($_POST["value"])
+            ? (int)$_POST["value"]
+            : -1;
+
+
+        if (
+            $value === 0 ||
+            $value === 1
+        ) {
+
+            /*
+             * Pin name is validated by the regex above,
+             * so it is safe to use as a column identifier.
+             */
+
+            $sql = "
+                UPDATE esp_control
+                SET `$action` = ?
+                WHERE controller_id = ?
+            ";
+
+            $stmt =
+                $conn->prepare($sql);
+
+            $stmt->bind_param(
+                "is",
+                $value,
+                $selected["controller_id"]
+            );
+
+            $stmt->execute();
+
+            $stmt->close();
+
+        }
+
+    }
+
+
+    /* =====================================================
+       RETURN TO SAME CONTROLLER
+       ===================================================== */
 
     header(
         "Location: index.php?controller_id=" .
@@ -330,6 +356,40 @@ if (
     );
 
     exit;
+}
+
+
+/* =========================================================
+   ONLINE / OFFLINE
+   ========================================================= */
+
+$is_online = false;
+
+if (
+    $selected &&
+    !empty($selected["last_seen"])
+) {
+
+    $last_seen =
+        strtotime(
+            $selected["last_seen"]
+        );
+
+    if ($last_seen !== false) {
+
+        $age =
+            time() - $last_seen;
+
+        if (
+            $age >= 0 &&
+            $age <= $ONLINE_LIMIT
+        ) {
+
+            $is_online = true;
+
+        }
+
+    }
 
 }
 
@@ -340,33 +400,19 @@ if (
 
 <html lang="en">
 
-
 <head>
-
 
 <meta charset="UTF-8">
 
-
 <meta
     name="viewport"
-    content="width=device-width,
-             initial-scale=1.0"
+    content="width=device-width, initial-scale=1.0"
 >
 
-
-<!-- Refresh webpage every 5 seconds -->
-
-<meta
-    http-equiv="refresh"
-    content="5"
->
-
-
-<title>ESP-SWITCH4</title>
+<title>ESP-SWITCH4 Controller</title>
 
 
 <style>
-
 
 body {
 
@@ -374,9 +420,7 @@ body {
 
     margin: 0;
 
-    background: #f2f4f7;
-
-    text-align: center;
+    background: #f1f3f6;
 
 }
 
@@ -385,7 +429,7 @@ body {
 
     width: 92%;
 
-    max-width: 750px;
+    max-width: 950px;
 
     margin: 30px auto;
 
@@ -396,7 +440,7 @@ body {
     border-radius: 12px;
 
     box-shadow:
-        0 2px 12px
+        0 2px 15px
         rgba(0,0,0,0.12);
 
 }
@@ -404,55 +448,59 @@ body {
 
 h1 {
 
+    text-align: center;
+
     margin-top: 0;
+
+    color: #111;
 
 }
 
 
 .selector {
 
-    margin: 20px 0;
-
-    padding: 15px;
+    text-align: center;
 
     background: #eef3f8;
 
+    padding: 18px;
+
     border-radius: 8px;
+
+    margin-bottom: 20px;
 
 }
 
 
-select {
-
-    width: 90%;
-
-    max-width: 500px;
+.selector select {
 
     padding: 10px;
 
     font-size: 16px;
+
+    width: 280px;
+
+    max-width: 90%;
 
 }
 
 
 .info {
 
-    margin: 15px 0;
-
-    padding: 15px;
+    text-align: center;
 
     background: #f7f7f7;
+
+    padding: 18px;
 
     border-radius: 8px;
 
 }
 
 
-.status {
+.info p {
 
-    font-weight: bold;
-
-    font-size: 20px;
+    margin: 9px;
 
 }
 
@@ -461,6 +509,10 @@ select {
 
     color: green;
 
+    font-size: 20px;
+
+    font-weight: bold;
+
 }
 
 
@@ -468,70 +520,180 @@ select {
 
     color: red;
 
+    font-size: 20px;
+
+    font-weight: bold;
+
 }
 
 
-table {
+.main-buttons {
 
-    width: 100%;
+    text-align: center;
 
-    border-collapse: collapse;
+    margin: 20px 0;
+
+}
+
+
+.main-buttons button {
+
+    padding: 12px 30px;
+
+    margin: 5px;
+
+    border: none;
+
+    border-radius: 6px;
+
+    color: white;
+
+    font-weight: bold;
+
+    cursor: pointer;
+
+    font-size: 15px;
+
+}
+
+
+.all-on {
+
+    background: #087f23;
+
+}
+
+
+.all-off {
+
+    background: #e60000;
+
+}
+
+
+.pin-grid {
+
+    display: grid;
+
+    grid-template-columns:
+        repeat(4, 1fr);
+
+    gap: 15px;
 
     margin-top: 20px;
 
 }
 
 
-th,
-td {
+.pin-card {
 
-    border: 1px solid #ccc;
+    border: 1px solid #ddd;
 
-    padding: 10px;
+    border-radius: 10px;
 
-}
+    padding: 18px;
 
+    text-align: center;
 
-th {
-
-    background: #eeeeee;
+    background: #fafafa;
 
 }
 
 
-button {
+.pin-name {
 
-    min-width: 100px;
+    font-size: 20px;
 
-    padding: 8px 14px;
+    font-weight: bold;
 
-    border: 0;
+    margin-bottom: 15px;
 
-    border-radius: 6px;
+}
+
+
+.pin-status {
+
+    font-size: 17px;
+
+    font-weight: bold;
+
+    margin-bottom: 15px;
+
+}
+
+
+.pin-on {
+
+    color: green;
+
+}
+
+
+.pin-off {
+
+    color: red;
+
+}
+
+
+.pin-card button {
+
+    padding: 9px 15px;
+
+    margin: 3px;
+
+    border: none;
+
+    border-radius: 5px;
+
+    color: white;
 
     cursor: pointer;
 
-    font-size: 14px;
+    font-weight: bold;
 
 }
 
 
-.on {
+.btn-on {
 
-    background: #c8f7c5;
+    background: green;
 
 }
 
 
-.off {
+.btn-off {
 
-    background: #ffd2d2;
+    background: red;
+
+}
+
+
+@media (max-width: 700px) {
+
+    .pin-grid {
+
+        grid-template-columns:
+            repeat(2, 1fr);
+
+    }
+
+}
+
+
+@media (max-width: 450px) {
+
+    .pin-grid {
+
+        grid-template-columns:
+            1fr;
+
+    }
 
 }
 
 
 </style>
-
 
 </head>
 
@@ -544,7 +706,7 @@ button {
 
 <h1>
 
-ESP-SWITCH4
+ESP-SWITCH4 Controller
 
 </h1>
 
@@ -553,14 +715,16 @@ ESP-SWITCH4
      CONTROLLER SELECTION
      ===================================================== -->
 
-
 <div class="selector">
 
 
-<form method="get">
+<form
+    method="get"
+    id="controllerForm"
+>
 
 
-<label for="controller_id">
+<label>
 
 <strong>
 
@@ -571,15 +735,12 @@ Select Controller:
 </label>
 
 
-<br>
-
-<br>
+<br><br>
 
 
 <select
     name="controller_id"
-    id="controller_id"
-    onchange="this.form.submit()"
+    onchange="document.getElementById('controllerForm').submit();"
 >
 
 
@@ -595,12 +756,9 @@ Select Controller:
     ) ?>"
 
     <?= (
-
         $selected &&
-
         $selected["controller_id"] ===
         $c["controller_id"]
-
     )
         ? "selected"
         : ""
@@ -613,12 +771,9 @@ Select Controller:
     $c["controller_id"]
 ) ?>
 
-
 -
-
 <?= h(
     $c["customer_name"]
-    ?? "Customer"
 ) ?>
 
 
@@ -637,14 +792,12 @@ Select Controller:
 </div>
 
 
-
 <?php if ($selected): ?>
 
 
 <!-- =====================================================
-     SELECTED CONTROLLER INFORMATION
+     CONTROLLER INFORMATION
      ===================================================== -->
-
 
 <div class="info">
 
@@ -656,7 +809,6 @@ Select Controller:
 Controller ID:
 
 </strong>
-
 
 <?= h(
     $selected["controller_id"]
@@ -674,21 +826,18 @@ Customer:
 
 </strong>
 
-
 <?= h(
     $selected["customer_name"]
-    ?? "-"
 ) ?>
 
 
 </p>
 
 
+<?php if ($is_online): ?>
 
-<?php if ($online): ?>
 
-
-<p class="status online">
+<p class="online">
 
 CONNECTED / ONLINE
 
@@ -698,7 +847,7 @@ CONNECTED / ONLINE
 <?php else: ?>
 
 
-<p class="status offline">
+<p class="offline">
 
 OFFLINE
 
@@ -706,7 +855,6 @@ OFFLINE
 
 
 <?php endif; ?>
-
 
 
 <p>
@@ -717,10 +865,8 @@ Last Seen (India Time):
 
 </strong>
 
-
 <?= h(
-    $selected["last_seen"]
-    ?? "-"
+    $selected["last_seen"] ?? "-"
 ) ?>
 
 
@@ -732,67 +878,110 @@ Last Seen (India Time):
 
 
 <!-- =====================================================
-     D1-D8 CONTROL TABLE
+     ALL ON / ALL OFF
      ===================================================== -->
 
-
-<table>
-
-
-<tr>
-
-<th>
-
-Pin
-
-</th>
-
-<th>
-
-Status
-
-</th>
-
-<th>
-
-Control
-
-</th>
-
-</tr>
+<div class="main-buttons">
 
 
+<form
+    method="post"
+    style="display:inline;"
+>
 
-<?php
 
-for (
+<input
+    type="hidden"
+    name="action"
+    value="ALL_ON"
+>
+
+
+<button
+    type="submit"
+    class="all-on"
+>
+
+
+ALL ON
+
+
+</button>
+
+
+</form>
+
+
+
+<form
+    method="post"
+    style="display:inline;"
+>
+
+
+<input
+    type="hidden"
+    name="action"
+    value="ALL_OFF"
+>
+
+
+<button
+    type="submit"
+    class="all-off"
+>
+
+
+ALL OFF
+
+
+</button>
+
+
+</form>
+
+
+</div>
+
+
+
+<!-- =====================================================
+     D1-D8
+     ===================================================== -->
+
+<div class="pin-grid">
+
+
+<?php for (
     $i = 1;
     $i <= 8;
     $i++
 ):
 
-    $pin = "D" . $i;
+    $pin =
+        "D" . $i;
 
     $value =
-        (int)$d[$pin];
+        (int)$pins[$pin];
 
 ?>
 
 
-<tr>
+<div class="pin-card">
 
 
-<td>
+<div class="pin-name">
 
 <?= $pin ?>
 
-</td>
+</div>
 
 
-<td
-    class="<?= $value
-        ? "on"
-        : "off"
+<div
+    class="pin-status
+    <?= $value
+        ? "pin-on"
+        : "pin-off"
     ?>"
 >
 
@@ -803,39 +992,38 @@ for (
 ?>
 
 
-</td>
+</div>
 
 
-<td>
+<!-- ON -->
 
-
-<form method="post">
+<form
+    method="post"
+    style="display:inline;"
+>
 
 
 <input
     type="hidden"
-    name="pin"
-    value="<?= h($pin) ?>"
+    name="action"
+    value="<?= $pin ?>"
 >
 
 
 <input
     type="hidden"
     name="value"
-    value="<?= $value
-        ? 0
-        : 1
-    ?>"
+    value="1"
 >
 
 
-<button type="submit">
+<button
+    type="submit"
+    class="btn-on"
+>
 
 
-<?= $value
-    ? "Turn OFF"
-    : "Turn ON"
-?>
+ON
 
 
 </button>
@@ -844,45 +1032,61 @@ for (
 </form>
 
 
-</td>
+<!-- OFF -->
+
+<form
+    method="post"
+    style="display:inline;"
+>
 
 
-</tr>
+<input
+    type="hidden"
+    name="action"
+    value="<?= $pin ?>"
+>
 
 
-<?php
+<input
+    type="hidden"
+    name="value"
+    value="0"
+>
 
-endfor;
 
-?>
+<button
+    type="submit"
+    class="btn-off"
+>
 
 
-</table>
+OFF
 
+
+</button>
+
+
+</form>
+
+
+</div>
+
+
+<?php endfor; ?>
+
+
+</div>
 
 
 <?php else: ?>
 
 
-<!-- =====================================================
-     NO CONTROLLER
-     ===================================================== -->
-
-
 <div class="info">
 
 
-<p class="status offline">
+<p class="offline">
 
-NO CONTROLLER FOUND
-
-</p>
-
-
-<p>
-
-Please add a controller
-to the controllers table.
+No controller found.
 
 </p>
 
@@ -898,5 +1102,5 @@ to the controllers table.
 
 </body>
 
-
 </html>
+```
