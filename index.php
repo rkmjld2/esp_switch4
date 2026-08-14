@@ -1,36 +1,62 @@
 <?php
 /*
- * ESP-SWITCH4 - Stage 1 index.php
+ * ESP-SWITCH4 - index.php
  *
- * - Shows all registered controllers in a selection list.
- * - User selects ONE controller at a time.
- * - Shows selected controller's customer details.
- * - Shows ONLINE/OFFLINE and last_seen.
- * - Controls only the selected controller's D1-D8.
+ * STAGE 1
  *
- * Requires:
- *   db.php
+ * - Select one controller at a time.
+ * - Works with ESP0001, ESP0002, ESP0003, etc.
+ * - Does NOT use customer_id.
+ * - Displays customer_name.
+ * - Displays ONLINE/OFFLINE.
+ * - Displays last_seen in India Time.
+ * - Displays D1-D8 for selected controller.
+ * - Controls D1-D8 only for selected controller.
  */
 
 require_once "db.php";
 
 date_default_timezone_set("Asia/Kolkata");
 
+
+/* =========================================================
+   HELPER FUNCTION
+   ========================================================= */
+
 function h($value)
 {
-    return htmlspecialchars((string)$value, ENT_QUOTES, "UTF-8");
+    return htmlspecialchars(
+        (string)$value,
+        ENT_QUOTES,
+        "UTF-8"
+    );
 }
 
 
 /* =========================================================
-   1. GET CONTROLLER ID FROM WEBPAGE
+   ONLINE TIME LIMIT
+   =========================================================
+   Controller is considered ONLINE if it contacted the
+   server within the previous 15 seconds.
    ========================================================= */
 
-$controller_id = trim($_GET["controller_id"] ?? "");
+$online_seconds = 15;
 
 
 /* =========================================================
-   2. GET ALL REGISTERED CONTROLLERS
+   GET SELECTED CONTROLLER
+   ========================================================= */
+
+$controller_id = trim(
+    $_GET["controller_id"] ?? ""
+);
+
+
+/* =========================================================
+   GET ALL CONTROLLERS
+   =========================================================
+   IMPORTANT:
+   No customer_id is used here.
    ========================================================= */
 
 $controllers = [];
@@ -39,7 +65,6 @@ $sql = "
     SELECT
         id,
         controller_id,
-        customer_id,
         customer_name,
         active,
         last_seen
@@ -49,22 +74,34 @@ $sql = "
 
 $result = $conn->query($sql);
 
-while ($row = $result->fetch_assoc()) {
-    $controllers[] = $row;
-}
+if ($result) {
 
+    while ($row = $result->fetch_assoc()) {
 
-/*
- * If no controller has been selected yet,
- * display the first controller initially.
- */
-if ($controller_id === "" && count($controllers) > 0) {
-    $controller_id = $controllers[0]["controller_id"];
+        $controllers[] = $row;
+
+    }
+
 }
 
 
 /* =========================================================
-   3. GET THE SELECTED CONTROLLER
+   SELECT FIRST CONTROLLER INITIALLY
+   ========================================================= */
+
+if (
+    $controller_id === "" &&
+    count($controllers) > 0
+) {
+
+    $controller_id =
+        $controllers[0]["controller_id"];
+
+}
+
+
+/* =========================================================
+   GET SELECTED CONTROLLER DETAILS
    ========================================================= */
 
 $selected = null;
@@ -75,7 +112,6 @@ if ($controller_id !== "") {
         SELECT
             id,
             controller_id,
-            customer_id,
             customer_name,
             active,
             last_seen
@@ -84,53 +120,67 @@ if ($controller_id !== "") {
         LIMIT 1
     ");
 
-    $stmt->bind_param("s", $controller_id);
+    $stmt->bind_param(
+        "s",
+        $controller_id
+    );
 
     $stmt->execute();
 
     $result = $stmt->get_result();
 
     if ($result->num_rows > 0) {
-        $selected = $result->fetch_assoc();
+
+        $selected =
+            $result->fetch_assoc();
+
     }
 
     $stmt->close();
+
 }
 
 
 /* =========================================================
-   4. DETERMINE ONLINE / OFFLINE
+   ONLINE / OFFLINE
    ========================================================= */
 
 $online = false;
 
-/*
- * Controller is considered online if last_seen
- * is within the previous 15 seconds.
- *
- * api.php should save last_seen in IST.
- */
+if (
+    $selected &&
+    !empty($selected["last_seen"])
+) {
 
-if ($selected && !empty($selected["last_seen"])) {
+    $last_seen_timestamp =
+        strtotime($selected["last_seen"]);
 
-    $last_seen_timestamp = strtotime($selected["last_seen"]);
-    $current_timestamp = time();
+    $current_timestamp =
+        time();
 
     if (
         $last_seen_timestamp !== false &&
-        ($current_timestamp - $last_seen_timestamp) <= 15 &&
-        ($current_timestamp - $last_seen_timestamp) >= 0
+        ($current_timestamp -
+         $last_seen_timestamp)
+         <= $online_seconds &&
+        ($current_timestamp -
+         $last_seen_timestamp)
+         >= 0
     ) {
+
         $online = true;
+
     }
+
 }
 
 
 /* =========================================================
-   5. DEFAULT D1-D8 VALUES
+   DEFAULT D1-D8 VALUES
    ========================================================= */
 
 $d = [
+
     "D1" => 0,
     "D2" => 0,
     "D3" => 0,
@@ -139,11 +189,12 @@ $d = [
     "D6" => 0,
     "D7" => 0,
     "D8" => 0
+
 ];
 
 
 /* =========================================================
-   6. GET D1-D8 FOR SELECTED CONTROLLER
+   GET D1-D8 FOR SELECTED CONTROLLER
    ========================================================= */
 
 if ($selected) {
@@ -163,33 +214,56 @@ if ($selected) {
         LIMIT 1
     ");
 
-    $stmt->bind_param("s", $selected["controller_id"]);
+    $stmt->bind_param(
+        "s",
+        $selected["controller_id"]
+    );
 
     $stmt->execute();
 
-    $result = $stmt->get_result();
+    $result =
+        $stmt->get_result();
 
     if ($result->num_rows > 0) {
-        $d = array_merge($d, $result->fetch_assoc());
+
+        $pin_data =
+            $result->fetch_assoc();
+
+        $d = array_merge(
+            $d,
+            $pin_data
+        );
+
     }
 
     $stmt->close();
+
 }
 
 
 /* =========================================================
-   7. HANDLE ON/OFF BUTTON
+   PROCESS ON/OFF BUTTON
    ========================================================= */
 
-if ($_SERVER["REQUEST_METHOD"] === "POST" && $selected) {
+if (
+    $_SERVER["REQUEST_METHOD"] === "POST" &&
+    $selected
+) {
 
-    $pin = strtoupper(trim($_POST["pin"] ?? ""));
+    $pin = strtoupper(
+        trim($_POST["pin"] ?? "")
+    );
 
-    $value = isset($_POST["value"])
+    $value =
+        isset($_POST["value"])
         ? (int)$_POST["value"]
         : -1;
 
+
+    /* Only D1-D8 are permitted. */
+
     $allowed = [
+
         "D1",
         "D2",
         "D3",
@@ -198,16 +272,25 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && $selected) {
         "D6",
         "D7",
         "D8"
+
     ];
 
+
     if (
-        in_array($pin, $allowed, true) &&
-        ($value === 0 || $value === 1)
+        in_array(
+            $pin,
+            $allowed,
+            true
+        ) &&
+        (
+            $value === 0 ||
+            $value === 1
+        )
     ) {
 
+
         /*
-         * IMPORTANT:
-         * Only the selected controller is updated.
+         * Update ONLY the selected controller.
          */
 
         $sql = "
@@ -216,7 +299,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && $selected) {
             WHERE controller_id = ?
         ";
 
-        $stmt = $conn->prepare($sql);
+
+        $stmt =
+            $conn->prepare($sql);
+
 
         $stmt->bind_param(
             "is",
@@ -224,44 +310,63 @@ if ($_SERVER["REQUEST_METHOD"] === "POST" && $selected) {
             $selected["controller_id"]
         );
 
+
         $stmt->execute();
 
         $stmt->close();
+
     }
 
+
     /*
-     * Return to the same selected controller.
+     * Return to the selected controller.
      */
 
     header(
         "Location: index.php?controller_id=" .
-        urlencode($selected["controller_id"])
+        urlencode(
+            $selected["controller_id"]
+        )
     );
 
     exit;
+
 }
 
 ?>
+
+
 <!DOCTYPE html>
 
 <html lang="en">
 
+
 <head>
+
 
 <meta charset="UTF-8">
 
-<meta name="viewport"
-      content="width=device-width, initial-scale=1.0">
 
-<!-- Refresh page every 5 seconds -->
+<meta
+    name="viewport"
+    content="width=device-width,
+             initial-scale=1.0"
+>
 
-<meta http-equiv="refresh"
-      content="5">
+
+<!-- Refresh webpage every 5 seconds -->
+
+<meta
+    http-equiv="refresh"
+    content="5"
+>
+
 
 <title>ESP-SWITCH4</title>
 
 
 <style>
+
 
 body {
 
@@ -290,7 +395,9 @@ body {
 
     border-radius: 12px;
 
-    box-shadow: 0 2px 12px rgba(0,0,0,.12);
+    box-shadow:
+        0 2px 12px
+        rgba(0,0,0,0.12);
 
 }
 
@@ -404,6 +511,8 @@ button {
 
     cursor: pointer;
 
+    font-size: 14px;
+
 }
 
 
@@ -420,7 +529,9 @@ button {
 
 }
 
+
 </style>
+
 
 </head>
 
@@ -431,12 +542,17 @@ button {
 <div class="container">
 
 
-<h1>ESP-SWITCH4</h1>
+<h1>
+
+ESP-SWITCH4
+
+</h1>
 
 
 <!-- =====================================================
      CONTROLLER SELECTION
      ===================================================== -->
+
 
 <div class="selector">
 
@@ -446,12 +562,17 @@ button {
 
 <label for="controller_id">
 
-<strong>Select Controller:</strong>
+<strong>
+
+Select Controller:
+
+</strong>
 
 </label>
 
 
 <br>
+
 <br>
 
 
@@ -462,28 +583,43 @@ button {
 >
 
 
-<?php foreach ($controllers as $c): ?>
+<?php foreach (
+    $controllers as $c
+): ?>
 
 
 <option
-    value="<?= h($c["controller_id"]) ?>"
+
+    value="<?= h(
+        $c["controller_id"]
+    ) ?>"
 
     <?= (
+
         $selected &&
+
         $selected["controller_id"] ===
         $c["controller_id"]
+
     )
-    ? "selected"
-    : ""
+        ? "selected"
+        : ""
     ?>
+
 >
 
 
-<?= h($c["controller_id"]) ?>
+<?= h(
+    $c["controller_id"]
+) ?>
+
 
 -
 
-<?= h($c["customer_name"] ?? "Customer") ?>
+<?= h(
+    $c["customer_name"]
+    ?? "Customer"
+) ?>
 
 
 </option>
@@ -501,6 +637,7 @@ button {
 </div>
 
 
+
 <?php if ($selected): ?>
 
 
@@ -508,34 +645,44 @@ button {
      SELECTED CONTROLLER INFORMATION
      ===================================================== -->
 
+
 <div class="info">
 
 
 <p>
 
-<strong>Controller ID:</strong>
+<strong>
 
-<?= h($selected["controller_id"]) ?>
+Controller ID:
+
+</strong>
+
+
+<?= h(
+    $selected["controller_id"]
+) ?>
+
 
 </p>
 
 
 <p>
 
-<strong>Customer ID:</strong>
+<strong>
 
-<?= h($selected["customer_id"] ?? "-") ?>
+Customer:
+
+</strong>
+
+
+<?= h(
+    $selected["customer_name"]
+    ?? "-"
+) ?>
+
 
 </p>
 
-
-<p>
-
-<strong>Customer:</strong>
-
-<?= h($selected["customer_name"] ?? "-") ?>
-
-</p>
 
 
 <?php if ($online): ?>
@@ -561,11 +708,21 @@ OFFLINE
 <?php endif; ?>
 
 
+
 <p>
 
-<strong>Last Seen (India Time):</strong>
+<strong>
 
-<?= h($selected["last_seen"] ?? "-") ?>
+Last Seen (India Time):
+
+</strong>
+
+
+<?= h(
+    $selected["last_seen"]
+    ?? "-"
+) ?>
+
 
 </p>
 
@@ -573,31 +730,51 @@ OFFLINE
 </div>
 
 
+
 <!-- =====================================================
      D1-D8 CONTROL TABLE
      ===================================================== -->
+
 
 <table>
 
 
 <tr>
 
-<th>Pin</th>
+<th>
 
-<th>Status</th>
+Pin
 
-<th>Control</th>
+</th>
+
+<th>
+
+Status
+
+</th>
+
+<th>
+
+Control
+
+</th>
 
 </tr>
 
 
+
 <?php
 
-for ($i = 1; $i <= 8; $i++):
+for (
+    $i = 1;
+    $i <= 8;
+    $i++
+):
 
     $pin = "D" . $i;
 
-    $value = (int)$d[$pin];
+    $value =
+        (int)$d[$pin];
 
 ?>
 
@@ -612,10 +789,18 @@ for ($i = 1; $i <= 8; $i++):
 </td>
 
 
-<td class="<?= $value ? "on" : "off" ?>">
+<td
+    class="<?= $value
+        ? "on"
+        : "off"
+    ?>"
+>
 
 
-<?= $value ? "ON" : "OFF" ?>
+<?= $value
+    ? "ON"
+    : "OFF"
+?>
 
 
 </td>
@@ -637,14 +822,20 @@ for ($i = 1; $i <= 8; $i++):
 <input
     type="hidden"
     name="value"
-    value="<?= $value ? 0 : 1 ?>"
+    value="<?= $value
+        ? 0
+        : 1
+    ?>"
 >
 
 
 <button type="submit">
 
 
-<?= $value ? "Turn OFF" : "Turn ON" ?>
+<?= $value
+    ? "Turn OFF"
+    : "Turn ON"
+?>
 
 
 </button>
@@ -659,13 +850,23 @@ for ($i = 1; $i <= 8; $i++):
 </tr>
 
 
-<?php endfor; ?>
+<?php
+
+endfor;
+
+?>
 
 
 </table>
 
 
+
 <?php else: ?>
+
+
+<!-- =====================================================
+     NO CONTROLLER
+     ===================================================== -->
 
 
 <div class="info">
@@ -680,8 +881,8 @@ NO CONTROLLER FOUND
 
 <p>
 
-Please add a controller to the
-controllers table.
+Please add a controller
+to the controllers table.
 
 </p>
 
@@ -696,5 +897,6 @@ controllers table.
 
 
 </body>
+
 
 </html>
