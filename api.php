@@ -4,16 +4,11 @@
  * ESP-SWITCH4 - api.php
  * ============================================================
  *
- * Stage 1
+ * Used by ESP8266 and index.php
  *
- * Supports:
- *   ESP0001
- *   ESP0002
- *   ESP0003
- *   etc.
+ * Database:
  *
- * Controllers table:
- *
+ * controllers
  *   id
  *   controller_id
  *   device_token
@@ -21,10 +16,16 @@
  *   active
  *   last_seen
  *
- * esp_control table:
- *
+ * esp_control
  *   controller_id
- *   D1 D2 D3 D4 D5 D6 D7 D8
+ *   D1
+ *   D2
+ *   D3
+ *   D4
+ *   D5
+ *   D6
+ *   D7
+ *   D8
  *
  * ============================================================
  */
@@ -33,14 +34,14 @@ require_once "db.php";
 
 
 /* ============================================================
-   TIME ZONE
+   INDIA STANDARD TIME
    ============================================================ */
 
 date_default_timezone_set("Asia/Kolkata");
 
 
 /* ============================================================
-   JSON RESPONSE
+   RETURN JSON
    ============================================================ */
 
 header("Content-Type: application/json; charset=UTF-8");
@@ -50,9 +51,7 @@ header("Content-Type: application/json; charset=UTF-8");
    GET PARAMETERS
    ============================================================ */
 
-$action = trim(
-    $_GET["action"] ?? ""
-);
+$action = trim($_GET["action"] ?? "");
 
 $controller_id = trim(
     $_GET["controller_id"] ?? ""
@@ -64,17 +63,25 @@ $device_token = trim(
 
 
 /* ============================================================
-   CHECK REQUIRED PARAMETERS
+   BASIC VALIDATION
    ============================================================ */
 
-if (
-    $controller_id === "" ||
-    $device_token === ""
-) {
+if ($controller_id === "") {
 
     echo json_encode([
-        "success" => false,
-        "error" => "Missing controller_id or device_token"
+        "status" => "error",
+        "message" => "controller_id missing"
+    ]);
+
+    exit;
+}
+
+
+if ($device_token === "") {
+
+    echo json_encode([
+        "status" => "error",
+        "message" => "device_token missing"
     ]);
 
     exit;
@@ -82,23 +89,7 @@ if (
 
 
 /* ============================================================
-   FIND EXACT CONTROLLER
-   ============================================================
-   
-   IMPORTANT:
-   We search using BOTH controller_id and device_token.
-
-   Therefore:
-
-   ESP0001 + ESP0001 token
-          -> ESP0001 record
-
-   ESP0002 + ESP0002 token
-          -> ESP0002 record
-
-   ESP0003 + ESP0003 token
-          -> ESP0003 record
-
+   CHECK CONTROLLER + TOKEN
    ============================================================ */
 
 $stmt = $conn->prepare("
@@ -107,20 +98,18 @@ $stmt = $conn->prepare("
         controller_id,
         device_token,
         customer_name,
-        active,
-        last_seen
+        active
     FROM controllers
     WHERE controller_id = ?
       AND device_token = ?
     LIMIT 1
 ");
 
-
 if (!$stmt) {
 
     echo json_encode([
-        "success" => false,
-        "error" => "Controller query prepare failed"
+        "status" => "error",
+        "message" => "Controller query prepare failed"
     ]);
 
     exit;
@@ -136,67 +125,47 @@ $stmt->bind_param(
 
 if (!$stmt->execute()) {
 
-    $stmt->close();
-
     echo json_encode([
-        "success" => false,
-        "error" => "Controller query failed"
+        "status" => "error",
+        "message" => "Controller query failed"
     ]);
+
+    $stmt->close();
 
     exit;
 }
 
 
-$result =
-    $stmt->get_result();
+$result = $stmt->get_result();
 
 
-/* ============================================================
-   CONTROLLER NOT FOUND
-   ============================================================ */
-
-if (
-    $result->num_rows === 0
-) {
-
-    $stmt->close();
+if ($result->num_rows === 0) {
 
     echo json_encode([
-        "success" => false,
-        "error" =>
-            "Invalid controller_id or device_token",
-        "controller_id" =>
-            $controller_id
+        "status" => "error",
+        "message" => "Invalid controller_id or device_token"
     ]);
+
+    $stmt->close();
 
     exit;
 }
 
 
-$controller =
-    $result->fetch_assoc();
-
+$controller = $result->fetch_assoc();
 
 $stmt->close();
 
 
 /* ============================================================
    CHECK ACTIVE
-   ============================================================
-   
-   active = 1 means controller is permitted to operate.
-
    ============================================================ */
 
-if (
-    (int)$controller["active"] !== 1
-) {
+if ((int)$controller["active"] !== 1) {
 
     echo json_encode([
-        "success" => false,
-        "error" => "Controller is inactive",
-        "controller_id" =>
-            $controller_id
+        "status" => "error",
+        "message" => "Controller is inactive"
     ]);
 
     exit;
@@ -206,17 +175,44 @@ if (
 /* ============================================================
    UPDATE LAST_SEEN
    ============================================================
-   
-   IMPORTANT:
-   The UPDATE contains BOTH controller_id AND device_token.
+ *
+ * IMPORTANT:
+ *
+ * We do NOT use:
+ *
+ * NOW()
+ *
+ * or
+ *
+ * DATE_ADD(...)
+ *
+ * or
+ *
+ * INTERVAL ...
+ *
+ * because TiDB/MySQL server timezone can differ.
+ *
+ * PHP explicitly creates the current India time.
+ *
+ * Example:
+ * 2026-08-14 10:15:25
+ *
+ * ============================================================
+ */
 
-   Thus ESP0002 can NEVER update ESP0001's record.
+$indiaTime = new DateTime(
+    "now",
+    new DateTimeZone("Asia/Kolkata")
+);
 
+$last_seen = $indiaTime->format(
+    "Y-m-d H:i:s"
+);
+
+
+/* ============================================================
+   UPDATE ONLY THE REQUESTING CONTROLLER
    ============================================================ */
-
-$india_time =
-    date("Y-m-d H:i:s");
-
 
 $stmt = $conn->prepare("
     UPDATE controllers
@@ -229,9 +225,8 @@ $stmt = $conn->prepare("
 if (!$stmt) {
 
     echo json_encode([
-        "success" => false,
-        "error" =>
-            "last_seen update prepare failed"
+        "status" => "error",
+        "message" => "last_seen prepare failed"
     ]);
 
     exit;
@@ -240,7 +235,7 @@ if (!$stmt) {
 
 $stmt->bind_param(
     "sss",
-    $india_time,
+    $last_seen,
     $controller_id,
     $device_token
 );
@@ -248,13 +243,12 @@ $stmt->bind_param(
 
 if (!$stmt->execute()) {
 
-    $stmt->close();
-
     echo json_encode([
-        "success" => false,
-        "error" =>
-            "last_seen update failed"
+        "status" => "error",
+        "message" => "Could not update last_seen"
     ]);
+
+    $stmt->close();
 
     exit;
 }
@@ -265,15 +259,22 @@ $stmt->close();
 
 /* ============================================================
    ACTION = GET
-   ============================================================ */
+   ============================================================
+ *
+ * ESP8266 sends:
+ *
+ * api.php?action=get
+ * &controller_id=ESP0001
+ * &device_token=ESP0001-TOKEN-2026-A7K9X2
+ *
+ * ============================================================
+ */
 
-if (
-    strtolower($action) === "get"
-) {
+if ($action === "get") {
 
 
     /* ========================================================
-       GET D1-D8 FOR EXACT CONTROLLER
+       GET D1-D8 FOR THIS CONTROLLER
        ======================================================== */
 
     $stmt = $conn->prepare("
@@ -295,11 +296,8 @@ if (
     if (!$stmt) {
 
         echo json_encode([
-            "success" => false,
-            "error" =>
-                "Pin query prepare failed",
-            "controller_id" =>
-                $controller_id
+            "status" => "error",
+            "message" => "esp_control prepare failed"
         ]);
 
         exit;
@@ -314,86 +312,60 @@ if (
 
     if (!$stmt->execute()) {
 
-        $stmt->close();
-
         echo json_encode([
-            "success" => false,
-            "error" =>
-                "Pin query failed",
-            "controller_id" =>
-                $controller_id
+            "status" => "error",
+            "message" => "esp_control query failed"
         ]);
+
+        $stmt->close();
 
         exit;
     }
 
 
-    $result =
-        $stmt->get_result();
+    $result = $stmt->get_result();
 
 
-    /* ========================================================
-       NO ESP_CONTROL RECORD
-       ======================================================== */
-
-    if (
-        $result->num_rows === 0
-    ) {
-
-        $stmt->close();
+    if ($result->num_rows === 0) {
 
         echo json_encode([
-            "success" => false,
-            "error" =>
-                "No esp_control record found",
-            "controller_id" =>
-                $controller_id
+            "status" => "error",
+            "message" => "No esp_control record found"
         ]);
+
+        $stmt->close();
 
         exit;
     }
 
 
-    $pins =
-        $result->fetch_assoc();
-
+    $row = $result->fetch_assoc();
 
     $stmt->close();
 
 
     /* ========================================================
-       CONVERT D1-D8 TO 0 OR 1
-       ======================================================== */
-
-    $D1 = (int)$pins["D1"];
-    $D2 = (int)$pins["D2"];
-    $D3 = (int)$pins["D3"];
-    $D4 = (int)$pins["D4"];
-    $D5 = (int)$pins["D5"];
-    $D6 = (int)$pins["D6"];
-    $D7 = (int)$pins["D7"];
-    $D8 = (int)$pins["D8"];
-
-
-    /* ========================================================
-       SEND RESPONSE TO ESP8266
+       RETURN D1-D8
        ======================================================== */
 
     echo json_encode([
 
-        "success" => true,
+        "status" => "ok",
 
         "controller_id" =>
             $controller_id,
 
-        "D1" => $D1,
-        "D2" => $D2,
-        "D3" => $D3,
-        "D4" => $D4,
-        "D5" => $D5,
-        "D6" => $D6,
-        "D7" => $D7,
-        "D8" => $D8
+        "D1" => (int)$row["D1"],
+        "D2" => (int)$row["D2"],
+        "D3" => (int)$row["D3"],
+        "D4" => (int)$row["D4"],
+        "D5" => (int)$row["D5"],
+        "D6" => (int)$row["D6"],
+        "D7" => (int)$row["D7"],
+        "D8" => (int)$row["D8"],
+
+        "last_seen" =>
+            $last_seen
 
     ]);
 
@@ -402,15 +374,147 @@ if (
 
 
 /* ============================================================
-   INVALID ACTION
+   ACTION = SET
+   ============================================================
+ *
+ * Example:
+ *
+ * api.php?action=set
+ * &controller_id=ESP0001
+ * &device_token=ESP0001-TOKEN-2026-A7K9X2
+ * &pin=D1
+ * &value=1
+ *
+ * ============================================================
+ */
+
+if ($action === "set") {
+
+
+    $pin = strtoupper(
+        trim($_GET["pin"] ?? "")
+    );
+
+
+    $value = isset($_GET["value"])
+        ? (int)$_GET["value"]
+        : -1;
+
+
+    /* ========================================================
+       CHECK PIN
+       ======================================================== */
+
+    if (!preg_match(
+        '/^D[1-8]$/',
+        $pin
+    )) {
+
+        echo json_encode([
+            "status" => "error",
+            "message" => "Invalid pin"
+        ]);
+
+        exit;
+    }
+
+
+    /* ========================================================
+       CHECK VALUE
+       ======================================================== */
+
+    if (
+        $value !== 0 &&
+        $value !== 1
+    ) {
+
+        echo json_encode([
+            "status" => "error",
+            "message" => "Invalid value"
+        ]);
+
+        exit;
+    }
+
+
+    /* ========================================================
+       UPDATE PIN
+       ======================================================== */
+
+    $sql = "
+        UPDATE esp_control
+        SET `$pin` = ?
+        WHERE controller_id = ?
+    ";
+
+
+    $stmt = $conn->prepare($sql);
+
+
+    if (!$stmt) {
+
+        echo json_encode([
+            "status" => "error",
+            "message" => "Pin update prepare failed"
+        ]);
+
+        exit;
+    }
+
+
+    $stmt->bind_param(
+        "is",
+        $value,
+        $controller_id
+    );
+
+
+    if (!$stmt->execute()) {
+
+        echo json_encode([
+            "status" => "error",
+            "message" => "Pin update failed"
+        ]);
+
+        $stmt->close();
+
+        exit;
+    }
+
+
+    $stmt->close();
+
+
+    echo json_encode([
+
+        "status" => "ok",
+
+        "controller_id" =>
+            $controller_id,
+
+        "pin" => $pin,
+
+        "value" => $value,
+
+        "last_seen" =>
+            $last_seen
+
+    ]);
+
+    exit;
+}
+
+
+/* ============================================================
+   UNKNOWN ACTION
    ============================================================ */
 
 echo json_encode([
 
-    "success" => false,
+    "status" => "error",
 
-    "error" =>
-        "Invalid action"
+    "message" =>
+        "Unknown action. Use action=get or action=set"
 
 ]);
 
