@@ -1,122 +1,45 @@
 <?php
 /*
- * ESP_SWITCH3 - FINAL index.php
+ * ESP-SWITCH4 - Stage 1 index.php
  *
- * FINAL DESIGN:
- * The browser does NOT ask the customer for Controller ID or Token.
+ * - Shows all registered controllers in a selection list.
+ * - User selects ONE controller at a time.
+ * - Shows selected controller's customer details.
+ * - Shows ONLINE/OFFLINE and last_seen.
+ * - Controls only the selected controller's D1-D8.
  *
- * IMPORTANT ARCHITECTURE:
- * app.ino identifies the physical ESP8266 to api.php using:
- *     controller_id + device_token
- *
- * api.php updates controllers.last_seen and reads/writes esp_control.
- *
- * The browser cannot directly receive the ID from app.ino.
- * Therefore this page uses the server's last_seen information.
- *
- * If exactly ONE controller is online, that controller is opened
- * automatically.
- *
- * If several controllers are online, the browser cannot safely
- * determine which physical controller belongs to the customer
- * without a browser/customer association. In that situation,
- * this page deliberately shows the controller list rather than
- * controlling the wrong device.
- *
- * Last Seen is stored in UTC and displayed in India Standard Time.
+ * Requires:
+ *   db.php
  */
 
-session_start();
 require_once "db.php";
 
-/* ------------------------------------------------------------
-   SETTINGS
-   ------------------------------------------------------------ */
+date_default_timezone_set("Asia/Kolkata");
 
-$ONLINE_SECONDS = 15;
-
-/* ------------------------------------------------------------
-   HELPERS
-   ------------------------------------------------------------ */
-
-function valid_controller_id($id)
+function h($value)
 {
-    return is_string($id) &&
-           preg_match('/^[A-Za-z0-9_-]{1,50}$/', $id);
+    return htmlspecialchars((string)$value, ENT_QUOTES, "UTF-8");
 }
 
-function is_controller_online($last_seen, $online_seconds)
-{
-    if (empty($last_seen)) {
-        return false;
-    }
 
-    $t = strtotime($last_seen);
+/* =========================================================
+   1. GET CONTROLLER ID FROM WEBPAGE
+   ========================================================= */
 
-    if ($t === false) {
-        return false;
-    }
+$controller_id = trim($_GET["controller_id"] ?? "");
 
-    return (time() - $t) <= $online_seconds;
-}
 
-function india_time($utc_time)
-{
-    if (empty($utc_time)) {
-        return "Not available";
-    }
-
-    try {
-        $dt = new DateTime(
-            $utc_time,
-            new DateTimeZone("UTC")
-        );
-
-        $dt->setTimezone(
-            new DateTimeZone("Asia/Kolkata")
-        );
-
-        return $dt->format("Y-m-d H:i:s");
-    }
-    catch (Exception $e) {
-        return $utc_time;
-    }
-}
-
-/* ------------------------------------------------------------
-   LOGOUT / CLEAR CURRENT BROWSER SELECTION
-   ------------------------------------------------------------ */
-
-if (isset($_GET["logout"])) {
-
-    $_SESSION = [];
-    session_destroy();
-
-    header("Location: index.php");
-    exit;
-}
-
-/*
- * Back to controller list deliberately clears the browser's
- * current selection.
- */
-if (isset($_GET["back"])) {
-
-    unset($_SESSION["controller_id"]);
-
-    header("Location: index.php");
-    exit;
-}
-
-/* ------------------------------------------------------------
-   READ ALL REGISTERED CONTROLLERS
-   ------------------------------------------------------------ */
+/* =========================================================
+   2. GET ALL REGISTERED CONTROLLERS
+   ========================================================= */
 
 $controllers = [];
 
 $sql = "
     SELECT
+        id,
         controller_id,
+        customer_id,
         customer_name,
         active,
         last_seen
@@ -130,714 +53,543 @@ while ($row = $result->fetch_assoc()) {
     $controllers[] = $row;
 }
 
-/* ------------------------------------------------------------
-   DETERMINE CURRENT CONTROLLER
-   ------------------------------------------------------------ */
-
-$controller_id = $_SESSION["controller_id"] ?? "";
 
 /*
- * IMPORTANT:
- * We intentionally do NOT accept controller_id from a normal
- * browser URL as the automatic identification mechanism.
+ * If no controller has been selected yet,
+ * display the first controller initially.
+ */
+if ($controller_id === "" && count($controllers) > 0) {
+    $controller_id = $controllers[0]["controller_id"];
+}
+
+
+/* =========================================================
+   3. GET THE SELECTED CONTROLLER
+   ========================================================= */
+
+$selected = null;
+
+if ($controller_id !== "") {
+
+    $stmt = $conn->prepare("
+        SELECT
+            id,
+            controller_id,
+            customer_id,
+            customer_name,
+            active,
+            last_seen
+        FROM controllers
+        WHERE controller_id = ?
+        LIMIT 1
+    ");
+
+    $stmt->bind_param("s", $controller_id);
+
+    $stmt->execute();
+
+    $result = $stmt->get_result();
+
+    if ($result->num_rows > 0) {
+        $selected = $result->fetch_assoc();
+    }
+
+    $stmt->close();
+}
+
+
+/* =========================================================
+   4. DETERMINE ONLINE / OFFLINE
+   ========================================================= */
+
+$online = false;
+
+/*
+ * Controller is considered online if last_seen
+ * is within the previous 15 seconds.
  *
- * app.ino -> api.php is the controller identification path.
- *
- * If the browser has no previous selection, find controllers
- * that have recently contacted api.php.
+ * api.php should save last_seen in IST.
  */
 
-if ($controller_id === "") {
+if ($selected && !empty($selected["last_seen"])) {
 
-    $online_ids = [];
+    $last_seen_timestamp = strtotime($selected["last_seen"]);
+    $current_timestamp = time();
 
-    foreach ($controllers as $row) {
+    if (
+        $last_seen_timestamp !== false &&
+        ($current_timestamp - $last_seen_timestamp) <= 15 &&
+        ($current_timestamp - $last_seen_timestamp) >= 0
+    ) {
+        $online = true;
+    }
+}
 
-        if ((int)$row["active"] !== 1) {
-            continue;
-        }
 
-        if (is_controller_online(
-            $row["last_seen"],
-            $ONLINE_SECONDS
-        )) {
-            $online_ids[] = $row["controller_id"];
-        }
+/* =========================================================
+   5. DEFAULT D1-D8 VALUES
+   ========================================================= */
+
+$d = [
+    "D1" => 0,
+    "D2" => 0,
+    "D3" => 0,
+    "D4" => 0,
+    "D5" => 0,
+    "D6" => 0,
+    "D7" => 0,
+    "D8" => 0
+];
+
+
+/* =========================================================
+   6. GET D1-D8 FOR SELECTED CONTROLLER
+   ========================================================= */
+
+if ($selected) {
+
+    $stmt = $conn->prepare("
+        SELECT
+            D1,
+            D2,
+            D3,
+            D4,
+            D5,
+            D6,
+            D7,
+            D8
+        FROM esp_control
+        WHERE controller_id = ?
+        LIMIT 1
+    ");
+
+    $stmt->bind_param("s", $selected["controller_id"]);
+
+    $stmt->execute();
+
+    $result = $stmt->get_result();
+
+    if ($result->num_rows > 0) {
+        $d = array_merge($d, $result->fetch_assoc());
+    }
+
+    $stmt->close();
+}
+
+
+/* =========================================================
+   7. HANDLE ON/OFF BUTTON
+   ========================================================= */
+
+if ($_SERVER["REQUEST_METHOD"] === "POST" && $selected) {
+
+    $pin = strtoupper(trim($_POST["pin"] ?? ""));
+
+    $value = isset($_POST["value"])
+        ? (int)$_POST["value"]
+        : -1;
+
+    $allowed = [
+        "D1",
+        "D2",
+        "D3",
+        "D4",
+        "D5",
+        "D6",
+        "D7",
+        "D8"
+    ];
+
+    if (
+        in_array($pin, $allowed, true) &&
+        ($value === 0 || $value === 1)
+    ) {
+
+        /*
+         * IMPORTANT:
+         * Only the selected controller is updated.
+         */
+
+        $sql = "
+            UPDATE esp_control
+            SET `$pin` = ?
+            WHERE controller_id = ?
+        ";
+
+        $stmt = $conn->prepare($sql);
+
+        $stmt->bind_param(
+            "is",
+            $value,
+            $selected["controller_id"]
+        );
+
+        $stmt->execute();
+
+        $stmt->close();
     }
 
     /*
-     * With one active/online ESP8266, automatically open it.
+     * Return to the same selected controller.
      */
-    if (count($online_ids) === 1) {
 
-        $controller_id = $online_ids[0];
+    header(
+        "Location: index.php?controller_id=" .
+        urlencode($selected["controller_id"])
+    );
 
-        $_SESSION["controller_id"] = $controller_id;
-    }
+    exit;
 }
 
-/* ------------------------------------------------------------
-   MANUAL SELECTION IS KEPT ONLY AS A FALLBACK / TEST FEATURE
-   ------------------------------------------------------------ */
-
-if ($_SERVER["REQUEST_METHOD"] === "POST" &&
-    isset($_POST["select_controller_id"])) {
-
-    $id = trim($_POST["select_controller_id"]);
-
-    if (valid_controller_id($id)) {
-
-        $_SESSION["controller_id"] = $id;
-
-        header("Location: index.php");
-        exit;
-    }
-}
-
-/*
- * If a manual selection already exists in the session, use it.
- */
-$controller_id = $_SESSION["controller_id"] ?? "";
-
-/* ------------------------------------------------------------
-   NO UNIQUE ONLINE CONTROLLER
-   ------------------------------------------------------------ */
-
-if ($controller_id === "") {
 ?>
 <!DOCTYPE html>
-<html>
+
+<html lang="en">
+
 <head>
 
 <meta charset="UTF-8">
 
 <meta name="viewport"
-      content="width=device-width, initial-scale=1">
+      content="width=device-width, initial-scale=1.0">
+
+<!-- Refresh page every 5 seconds -->
 
 <meta http-equiv="refresh"
       content="5">
 
-<title>ESP-SWITCH3</title>
+<title>ESP-SWITCH4</title>
+
 
 <style>
 
 body {
+
     font-family: Arial, sans-serif;
-    background: #eeeeee;
+
     margin: 0;
-    padding: 20px;
-}
 
-.box {
-    max-width: 950px;
-    margin: 35px auto;
-    background: white;
-    padding: 25px;
-    border-radius: 15px;
-    box-shadow: 0 3px 15px #aaaaaa;
+    background: #f2f4f7;
+
     text-align: center;
+
 }
 
-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-top: 20px;
+
+.container {
+
+    width: 92%;
+
+    max-width: 750px;
+
+    margin: 30px auto;
+
+    background: white;
+
+    padding: 25px;
+
+    border-radius: 12px;
+
+    box-shadow: 0 2px 12px rgba(0,0,0,.12);
+
 }
 
-th, td {
-    border: 1px solid #dddddd;
-    padding: 12px;
+
+h1 {
+
+    margin-top: 0;
+
 }
 
-th {
-    background: #f3f3f3;
+
+.selector {
+
+    margin: 20px 0;
+
+    padding: 15px;
+
+    background: #eef3f8;
+
+    border-radius: 8px;
+
 }
+
+
+select {
+
+    width: 90%;
+
+    max-width: 500px;
+
+    padding: 10px;
+
+    font-size: 16px;
+
+}
+
+
+.info {
+
+    margin: 15px 0;
+
+    padding: 15px;
+
+    background: #f7f7f7;
+
+    border-radius: 8px;
+
+}
+
+
+.status {
+
+    font-weight: bold;
+
+    font-size: 20px;
+
+}
+
 
 .online {
+
     color: green;
-    font-weight: bold;
+
 }
+
 
 .offline {
+
     color: red;
-    font-weight: bold;
+
 }
+
+
+table {
+
+    width: 100%;
+
+    border-collapse: collapse;
+
+    margin-top: 20px;
+
+}
+
+
+th,
+td {
+
+    border: 1px solid #ccc;
+
+    padding: 10px;
+
+}
+
+
+th {
+
+    background: #eeeeee;
+
+}
+
 
 button {
-    padding: 9px 18px;
+
+    min-width: 100px;
+
+    padding: 8px 14px;
+
     border: 0;
+
     border-radius: 6px;
-    background: #0066cc;
-    color: white;
+
     cursor: pointer;
+
 }
 
-.note {
-    background: #f7f7f7;
-    padding: 12px;
-    border-radius: 8px;
+
+.on {
+
+    background: #c8f7c5;
+
+}
+
+
+.off {
+
+    background: #ffd2d2;
+
 }
 
 </style>
 
 </head>
 
+
 <body>
 
-<div class="box">
 
-<h1>ESP-SWITCH3</h1>
+<div class="container">
 
-<h2>Waiting for Controller</h2>
 
-<div class="note">
+<h1>ESP-SWITCH4</h1>
 
-<p>
-The browser is waiting for a controller to communicate
-with the server.
-</p>
 
-<p>
-No Controller ID or Device Token is required from the customer.
-</p>
+<!-- =====================================================
+     CONTROLLER SELECTION
+     ===================================================== -->
 
-</div>
+<div class="selector">
 
-<h3>Registered Controllers</h3>
 
-<table>
+<form method="get">
 
-<tr>
-<th>Controller ID</th>
-<th>Customer</th>
-<th>Status</th>
-<th>Action</th>
-</tr>
 
-<?php foreach ($controllers as $row): ?>
+<label for="controller_id">
 
-<?php
+<strong>Select Controller:</strong>
 
-$online = is_controller_online(
-    $row["last_seen"],
-    $ONLINE_SECONDS
-);
+</label>
 
-?>
 
-<tr>
+<br>
+<br>
 
-<td>
-<?= htmlspecialchars($row["controller_id"]) ?>
-</td>
 
-<td>
-<?= htmlspecialchars(
-    $row["customer_name"] ?? ""
-) ?>
-</td>
+<select
+    name="controller_id"
+    id="controller_id"
+    onchange="this.form.submit()"
+>
 
-<td>
 
-<?php if ((int)$row["active"] !== 1): ?>
+<?php foreach ($controllers as $c): ?>
 
-<span class="offline">
-INACTIVE
-</span>
 
-<?php elseif ($online): ?>
+<option
+    value="<?= h($c["controller_id"]) ?>"
 
-<span class="online">
-ONLINE
-</span>
+    <?= (
+        $selected &&
+        $selected["controller_id"] ===
+        $c["controller_id"]
+    )
+    ? "selected"
+    : ""
+    ?>
+>
 
-<?php else: ?>
 
-<span class="offline">
-OFFLINE
-</span>
-
-<?php endif; ?>
-
-</td>
-
-<td>
-
-<?php if ($online): ?>
-
-<form method="post">
-
-<input
-    type="hidden"
-    name="select_controller_id"
-    value="<?= htmlspecialchars(
-        $row["controller_id"]
-    ) ?>">
-
-<button type="submit">
-CONTROL
-</button>
-
-</form>
-
-<?php else: ?>
+<?= h($c["controller_id"]) ?>
 
 -
 
-<?php endif; ?>
+<?= h($c["customer_name"] ?? "Customer") ?>
 
-</td>
 
-</tr>
+</option>
+
 
 <?php endforeach; ?>
 
-</table>
 
-</div>
+</select>
 
-</body>
-</html>
-
-<?php
-
-exit;
-
-}
-
-/* ------------------------------------------------------------
-   VALIDATE SELECTED CONTROLLER
-   ------------------------------------------------------------ */
-
-if (!valid_controller_id($controller_id)) {
-
-    unset($_SESSION["controller_id"]);
-
-    header("Location: index.php");
-
-    exit;
-}
-
-/* ------------------------------------------------------------
-   GET SELECTED CONTROLLER
-   ------------------------------------------------------------ */
-
-$stmt = $conn->prepare("
-    SELECT
-        controller_id,
-        customer_name,
-        active,
-        last_seen
-    FROM controllers
-    WHERE controller_id = ?
-    LIMIT 1
-");
-
-$stmt->bind_param(
-    "s",
-    $controller_id
-);
-
-$stmt->execute();
-
-$result = $stmt->get_result();
-
-if ($result->num_rows === 0) {
-
-    $stmt->close();
-
-    unset($_SESSION["controller_id"]);
-
-    header("Location: index.php");
-
-    exit;
-}
-
-$controller = $result->fetch_assoc();
-
-$stmt->close();
-
-/* ------------------------------------------------------------
-   ACTIVE CHECK
-   ------------------------------------------------------------ */
-
-if ((int)$controller["active"] !== 1) {
-
-    unset($_SESSION["controller_id"]);
-
-    die(
-        "<h2 style='text-align:center'>
-         Controller is inactive.
-         </h2>"
-    );
-}
-
-/* ------------------------------------------------------------
-   D1-D8 WEB CONTROL
-   ------------------------------------------------------------ */
-
-if ($_SERVER["REQUEST_METHOD"] === "POST") {
-
-    /*
-     * Individual pin
-     */
-    if (
-        isset($_POST["pin"]) &&
-        isset($_POST["value"])
-    ) {
-
-        $allowed = [
-            "D1", "D2", "D3", "D4",
-            "D5", "D6", "D7", "D8"
-        ];
-
-        $pin = strtoupper(
-            trim($_POST["pin"])
-        );
-
-        $value = (int)$_POST["value"];
-
-        if (
-            in_array($pin, $allowed, true) &&
-            ($value === 0 || $value === 1)
-        ) {
-
-            $sql = "
-                UPDATE esp_control
-                SET `$pin` = ?
-                WHERE controller_id = ?
-            ";
-
-            $stmt = $conn->prepare($sql);
-
-            $stmt->bind_param(
-                "is",
-                $value,
-                $controller_id
-            );
-
-            $stmt->execute();
-
-            $stmt->close();
-        }
-    }
-
-    /*
-     * ALL ON
-     */
-    if (isset($_POST["all_on"])) {
-
-        $stmt = $conn->prepare("
-            UPDATE esp_control
-            SET
-                D1=1,
-                D2=1,
-                D3=1,
-                D4=1,
-                D5=1,
-                D6=1,
-                D7=1,
-                D8=1
-            WHERE controller_id = ?
-        ");
-
-        $stmt->bind_param(
-            "s",
-            $controller_id
-        );
-
-        $stmt->execute();
-
-        $stmt->close();
-    }
-
-    /*
-     * ALL OFF
-     */
-    if (isset($_POST["all_off"])) {
-
-        $stmt = $conn->prepare("
-            UPDATE esp_control
-            SET
-                D1=0,
-                D2=0,
-                D3=0,
-                D4=0,
-                D5=0,
-                D6=0,
-                D7=0,
-                D8=0
-            WHERE controller_id = ?
-        ");
-
-        $stmt->bind_param(
-            "s",
-            $controller_id
-        );
-
-        $stmt->execute();
-
-        $stmt->close();
-    }
-
-    header("Location: index.php");
-
-    exit;
-}
-
-/* ------------------------------------------------------------
-   READ D1-D8
-   ------------------------------------------------------------ */
-
-$stmt = $conn->prepare("
-    SELECT
-        D1,D2,D3,D4,
-        D5,D6,D7,D8
-    FROM esp_control
-    WHERE controller_id = ?
-    LIMIT 1
-");
-
-$stmt->bind_param(
-    "s",
-    $controller_id
-);
-
-$stmt->execute();
-
-$result = $stmt->get_result();
-
-if ($result->num_rows === 0) {
-
-    $stmt->close();
-
-    die(
-        "<h2 style='text-align:center'>
-         No control row found for this controller.
-         </h2>"
-    );
-}
-
-$control = $result->fetch_assoc();
-
-$stmt->close();
-
-/* ------------------------------------------------------------
-   ONLINE STATUS
-   ------------------------------------------------------------ */
-
-$online = is_controller_online(
-    $controller["last_seen"],
-    $ONLINE_SECONDS
-);
-
-/* ------------------------------------------------------------
-   INDIA TIME
-   ------------------------------------------------------------ */
-
-$last_seen_ist = india_time(
-    $controller["last_seen"]
-);
-
-?>
-<!DOCTYPE html>
-
-<html>
-
-<head>
-
-<meta charset="UTF-8">
-
-<meta name="viewport"
-      content="width=device-width, initial-scale=1">
-
-<meta http-equiv="refresh"
-      content="5">
-
-<title>
-ESP-SWITCH3 Controller
-</title>
-
-<style>
-
-body {
-    font-family: Arial, sans-serif;
-    background: #eeeeee;
-    margin: 0;
-    padding: 20px;
-}
-
-.box {
-    max-width: 900px;
-    margin: auto;
-    background: white;
-    padding: 25px;
-    border-radius: 15px;
-    box-shadow: 0 3px 15px #aaaaaa;
-    text-align: center;
-}
-
-.info {
-    background: #f5f5f5;
-    padding: 15px;
-    border-radius: 10px;
-}
-
-.online {
-    color: green;
-    font-weight: bold;
-}
-
-.offline {
-    color: red;
-    font-weight: bold;
-}
-
-.grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 15px;
-    margin-top: 25px;
-}
-
-.pin {
-    padding: 18px;
-    background: #f7f7f7;
-    border: 1px solid #dddddd;
-    border-radius: 12px;
-}
-
-.state_on {
-    color: green;
-    font-weight: bold;
-}
-
-.state_off {
-    color: red;
-    font-weight: bold;
-}
-
-button {
-    padding: 10px 16px;
-    margin: 4px;
-    border: 0;
-    border-radius: 7px;
-    color: white;
-    cursor: pointer;
-}
-
-.on_button {
-    background: green;
-}
-
-.off_button {
-    background: red;
-}
-
-.all_button {
-    background: #0066cc;
-    padding: 12px 25px;
-}
-
-.nav_button {
-    display: inline-block;
-    margin-top: 20px;
-    padding: 10px 20px;
-    background: #555555;
-    color: white;
-    text-decoration: none;
-    border-radius: 7px;
-}
-
-@media (max-width: 650px) {
-
-    .grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
-
-}
-
-</style>
-
-</head>
-
-<body>
-
-<div class="box">
-
-<h1>
-ESP-SWITCH3 Controller
-</h1>
-
-<div class="info">
-
-<p>
-<b>Controller ID:</b>
-<?= htmlspecialchars($controller_id) ?>
-</p>
-
-<p>
-<b>Customer:</b>
-<?= htmlspecialchars(
-    $controller["customer_name"] ?? ""
-) ?>
-</p>
-
-<p>
-
-<b>Controller Status:</b>
-
-<span class="<?= $online
-    ? "online"
-    : "offline"
-?>">
-
-<?= $online
-    ? "ONLINE"
-    : "OFFLINE"
-?>
-
-</span>
-
-</p>
-
-<p>
-
-<b>Last Seen (India Time):</b>
-
-<?= htmlspecialchars(
-    $last_seen_ist
-) ?>
-
-</p>
-
-</div>
-
-<form method="post">
-
-<button
-    class="all_button"
-    type="submit"
-    name="all_on"
-    value="1">
-
-ALL ON
-
-</button>
-
-<button
-    class="all_button"
-    type="submit"
-    name="all_off"
-    value="1">
-
-ALL OFF
-
-</button>
 
 </form>
 
-<div class="grid">
+
+</div>
+
+
+<?php if ($selected): ?>
+
+
+<!-- =====================================================
+     SELECTED CONTROLLER INFORMATION
+     ===================================================== -->
+
+<div class="info">
+
+
+<p>
+
+<strong>Controller ID:</strong>
+
+<?= h($selected["controller_id"]) ?>
+
+</p>
+
+
+<p>
+
+<strong>Customer ID:</strong>
+
+<?= h($selected["customer_id"] ?? "-") ?>
+
+</p>
+
+
+<p>
+
+<strong>Customer:</strong>
+
+<?= h($selected["customer_name"] ?? "-") ?>
+
+</p>
+
+
+<?php if ($online): ?>
+
+
+<p class="status online">
+
+CONNECTED / ONLINE
+
+</p>
+
+
+<?php else: ?>
+
+
+<p class="status offline">
+
+OFFLINE
+
+</p>
+
+
+<?php endif; ?>
+
+
+<p>
+
+<strong>Last Seen (India Time):</strong>
+
+<?= h($selected["last_seen"] ?? "-") ?>
+
+</p>
+
+
+</div>
+
+
+<!-- =====================================================
+     D1-D8 CONTROL TABLE
+     ===================================================== -->
+
+<table>
+
+
+<tr>
+
+<th>Pin</th>
+
+<th>Status</th>
+
+<th>Control</th>
+
+</tr>
+
 
 <?php
 
@@ -845,80 +597,103 @@ for ($i = 1; $i <= 8; $i++):
 
     $pin = "D" . $i;
 
-    $state = (int)$control[$pin];
+    $value = (int)$d[$pin];
 
 ?>
 
-<div class="pin">
 
-<h3>
+<tr>
+
+
+<td>
+
 <?= $pin ?>
-</h3>
 
-<p class="<?= $state
-    ? "state_on"
-    : "state_off"
-?>">
+</td>
 
-<?= $state
-    ? "ON"
-    : "OFF"
-?>
 
-</p>
+<td class="<?= $value ? "on" : "off" ?>">
+
+
+<?= $value ? "ON" : "OFF" ?>
+
+
+</td>
+
+
+<td>
+
 
 <form method="post">
+
 
 <input
     type="hidden"
     name="pin"
-    value="<?= $pin ?>">
+    value="<?= h($pin) ?>"
+>
 
-<button
-    class="on_button"
-    type="submit"
+
+<input
+    type="hidden"
     name="value"
-    value="1">
+    value="<?= $value ? 0 : 1 ?>"
+>
 
-ON
+
+<button type="submit">
+
+
+<?= $value ? "Turn OFF" : "Turn ON" ?>
+
 
 </button>
 
-<button
-    class="off_button"
-    type="submit"
-    name="value"
-    value="0">
-
-OFF
-
-</button>
 
 </form>
 
-</div>
+
+</td>
+
+
+</tr>
+
 
 <?php endfor; ?>
 
+
+</table>
+
+
+<?php else: ?>
+
+
+<div class="info">
+
+
+<p class="status offline">
+
+NO CONTROLLER FOUND
+
+</p>
+
+
+<p>
+
+Please add a controller to the
+controllers table.
+
+</p>
+
+
 </div>
 
-<a
-    class="nav_button"
-    href="index.php?back=1">
 
-BACK / WAIT FOR CONTROLLER
+<?php endif; ?>
 
-</a>
-
-<a
-    class="nav_button"
-    href="index.php?logout=1">
-
-CLEAR SESSION
-
-</a>
 
 </div>
+
 
 </body>
 
