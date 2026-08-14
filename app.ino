@@ -17,8 +17,8 @@
 
 /* ================= WIFI ================= */
 
-const char* WIFI_SSID = "xxxx";
-const char* WIFI_PASSWORD = "xxx";
+const char* WIFI_SSID = "Airtel_56";
+const char* WIFI_PASSWORD = "Raviuma5658";
 
 /* ============ CONTROLLER IDENTITY ============ */
 
