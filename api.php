@@ -1,55 +1,54 @@
 <?php
 /*
- * ============================================================
- * ESP-SWITCH4 - api.php
- * ============================================================
- *
- * Used by ESP8266 and index.php
- *
- * Database:
- *
- * controllers
- *   id
- *   controller_id
- *   device_token
- *   customer_name
- *   active
- *   last_seen
- *
- * esp_control
- *   controller_id
- *   D1
- *   D2
- *   D3
- *   D4
- *   D5
- *   D6
- *   D7
- *   D8
- *
- * ============================================================
- */
+============================================================
+ ESP-SWITCH4 - api.php
+ FINAL VERSION
+============================================================
+
+Database:
+    esp_switch3
+
+Table: controllers
+    id
+    controller_id
+    device_token
+    customer_name
+    active
+    last_seen       <-- DATETIME
+
+Table: esp_control
+    id
+    controller_id
+    D1
+    D2
+    D3
+    D4
+    D5
+    D6
+    D7
+    D8
+
+============================================================
+*/
+
+
+/* =========================================================
+   DATABASE CONNECTION
+   ========================================================= */
 
 require_once "db.php";
 
 
-/* ============================================================
-   INDIA STANDARD TIME
-   ============================================================ */
-
-date_default_timezone_set("Asia/Kolkata");
-
-
-/* ============================================================
-   RETURN JSON
-   ============================================================ */
+/* =========================================================
+   JSON RESPONSE
+   ========================================================= */
 
 header("Content-Type: application/json; charset=UTF-8");
 
 
-/* ============================================================
+/* =========================================================
    GET PARAMETERS
-   ============================================================ */
+   ========================================================= */
 
 $action = trim($_GET["action"] ?? "");
 
@@ -62,9 +61,9 @@ $device_token = trim(
 );
 
 
-/* ============================================================
-   BASIC VALIDATION
-   ============================================================ */
+/* =========================================================
+   VALIDATE CONTROLLER ID
+   ========================================================= */
 
 if ($controller_id === "") {
 
@@ -77,6 +76,10 @@ if ($controller_id === "") {
 }
 
 
+/* =========================================================
+   VALIDATE DEVICE TOKEN
+   ========================================================= */
+
 if ($device_token === "") {
 
     echo json_encode([
@@ -88,9 +91,9 @@ if ($device_token === "") {
 }
 
 
-/* ============================================================
-   CHECK CONTROLLER + TOKEN
-   ============================================================ */
+/* =========================================================
+   VERIFY CONTROLLER ID + DEVICE TOKEN
+   ========================================================= */
 
 $stmt = $conn->prepare("
     SELECT
@@ -105,11 +108,12 @@ $stmt = $conn->prepare("
     LIMIT 1
 ");
 
+
 if (!$stmt) {
 
     echo json_encode([
         "status" => "error",
-        "message" => "Controller query prepare failed"
+        "message" => "Controller prepare failed"
     ]);
 
     exit;
@@ -139,11 +143,16 @@ if (!$stmt->execute()) {
 $result = $stmt->get_result();
 
 
+/* =========================================================
+   CONTROLLER NOT FOUND
+   ========================================================= */
+
 if ($result->num_rows === 0) {
 
     echo json_encode([
         "status" => "error",
-        "message" => "Invalid controller_id or device_token"
+        "message" =>
+            "Invalid controller_id or device_token"
     ]);
 
     $stmt->close();
@@ -152,14 +161,15 @@ if ($result->num_rows === 0) {
 }
 
 
-$controller = $result->fetch_assoc();
+$controller =
+    $result->fetch_assoc();
 
 $stmt->close();
 
 
-/* ============================================================
+/* =========================================================
    CHECK ACTIVE
-   ============================================================ */
+   ========================================================= */
 
 if ((int)$controller["active"] !== 1) {
 
@@ -172,47 +182,40 @@ if ((int)$controller["active"] !== 1) {
 }
 
 
-/* ============================================================
+/* =========================================================
+   INDIA STANDARD TIME
+   =========================================================
+   
+   Render normally uses UTC.
+
+   IST = UTC + 5 hours 30 minutes
+
+   We explicitly calculate IST here instead of depending
+   on the server's timezone configuration.
+
+   The database column last_seen is DATETIME.
+========================================================= */
+
+$utcTimestamp = time();
+
+$indiaTimestamp =
+    $utcTimestamp + (5 * 60 * 60) + (30 * 60);
+
+$last_seen =
+    gmdate(
+        "Y-m-d H:i:s",
+        $indiaTimestamp
+    );
+
+
+/* =========================================================
    UPDATE LAST_SEEN
-   ============================================================
- *
- * IMPORTANT:
- *
- * We do NOT use:
- *
- * NOW()
- *
- * or
- *
- * DATE_ADD(...)
- *
- * or
- *
- * INTERVAL ...
- *
- * because TiDB/MySQL server timezone can differ.
- *
- * PHP explicitly creates the current India time.
- *
- * Example:
- * 2026-08-14 10:15:25
- *
- * ============================================================
- */
-
-$indiaTime = new DateTime(
-    "now",
-    new DateTimeZone("Asia/Kolkata")
-);
-
-$last_seen = $indiaTime->format(
-    "Y-m-d H:i:s"
-);
-
-
-/* ============================================================
-   UPDATE ONLY THE REQUESTING CONTROLLER
-   ============================================================ */
+   =========================================================
+   
+   IMPORTANT:
+   Only the controller whose ID AND token were supplied
+   is updated.
+========================================================= */
 
 $stmt = $conn->prepare("
     UPDATE controllers
@@ -226,7 +229,8 @@ if (!$stmt) {
 
     echo json_encode([
         "status" => "error",
-        "message" => "last_seen prepare failed"
+        "message" =>
+            "last_seen prepare failed"
     ]);
 
     exit;
@@ -245,7 +249,8 @@ if (!$stmt->execute()) {
 
     echo json_encode([
         "status" => "error",
-        "message" => "Could not update last_seen"
+        "message" =>
+            "Could not update last_seen"
     ]);
 
     $stmt->close();
@@ -257,25 +262,19 @@ if (!$stmt->execute()) {
 $stmt->close();
 
 
-/* ============================================================
+/* =========================================================
    ACTION = GET
-   ============================================================
- *
- * ESP8266 sends:
- *
- * api.php?action=get
- * &controller_id=ESP0001
- * &device_token=ESP0001-TOKEN-2026-A7K9X2
- *
- * ============================================================
- */
+   =========================================================
+   
+   ESP8266 uses this to read D1-D8.
+========================================================= */
 
 if ($action === "get") {
 
 
-    /* ========================================================
-       GET D1-D8 FOR THIS CONTROLLER
-       ======================================================== */
+    /* -----------------------------------------------------
+       READ D1-D8 FOR THIS CONTROLLER
+       ----------------------------------------------------- */
 
     $stmt = $conn->prepare("
         SELECT
@@ -297,7 +296,8 @@ if ($action === "get") {
 
         echo json_encode([
             "status" => "error",
-            "message" => "esp_control prepare failed"
+            "message" =>
+                "esp_control prepare failed"
         ]);
 
         exit;
@@ -314,7 +314,8 @@ if ($action === "get") {
 
         echo json_encode([
             "status" => "error",
-            "message" => "esp_control query failed"
+            "message" =>
+                "esp_control query failed"
         ]);
 
         $stmt->close();
@@ -323,14 +324,20 @@ if ($action === "get") {
     }
 
 
-    $result = $stmt->get_result();
+    $result =
+        $stmt->get_result();
 
+
+    /* -----------------------------------------------------
+       NO PIN RECORD
+       ----------------------------------------------------- */
 
     if ($result->num_rows === 0) {
 
         echo json_encode([
             "status" => "error",
-            "message" => "No esp_control record found"
+            "message" =>
+                "No esp_control record found"
         ]);
 
         $stmt->close();
@@ -339,14 +346,15 @@ if ($action === "get") {
     }
 
 
-    $row = $result->fetch_assoc();
+    $row =
+        $result->fetch_assoc();
 
     $stmt->close();
 
 
-    /* ========================================================
+    /* -----------------------------------------------------
        RETURN D1-D8
-       ======================================================== */
+       ----------------------------------------------------- */
 
     echo json_encode([
 
@@ -373,20 +381,19 @@ if ($action === "get") {
 }
 
 
-/* ============================================================
+/* =========================================================
    ACTION = SET
-   ============================================================
- *
- * Example:
- *
- * api.php?action=set
- * &controller_id=ESP0001
- * &device_token=ESP0001-TOKEN-2026-A7K9X2
- * &pin=D1
- * &value=1
- *
- * ============================================================
- */
+   =========================================================
+   
+   Used when a pin is changed directly through API.
+
+   Example:
+   action=set
+   controller_id=ESP0001
+   device_token=ESP0001-TOKEN-2026-A7K9X2
+   pin=D1
+   value=1
+========================================================= */
 
 if ($action === "set") {
 
@@ -401,9 +408,9 @@ if ($action === "set") {
         : -1;
 
 
-    /* ========================================================
-       CHECK PIN
-       ======================================================== */
+    /* -----------------------------------------------------
+       VALIDATE PIN
+       ----------------------------------------------------- */
 
     if (!preg_match(
         '/^D[1-8]$/',
@@ -419,9 +426,9 @@ if ($action === "set") {
     }
 
 
-    /* ========================================================
-       CHECK VALUE
-       ======================================================== */
+    /* -----------------------------------------------------
+       VALIDATE VALUE
+       ----------------------------------------------------- */
 
     if (
         $value !== 0 &&
@@ -437,9 +444,14 @@ if ($action === "set") {
     }
 
 
-    /* ========================================================
-       UPDATE PIN
-       ======================================================== */
+    /* -----------------------------------------------------
+       UPDATE SELECTED PIN
+       ----------------------------------------------------- */
+
+    /*
+     * $pin has already been strictly checked as D1-D8,
+     * therefore it is safe to use as a column name.
+     */
 
     $sql = "
         UPDATE esp_control
@@ -448,14 +460,16 @@ if ($action === "set") {
     ";
 
 
-    $stmt = $conn->prepare($sql);
+    $stmt =
+        $conn->prepare($sql);
 
 
     if (!$stmt) {
 
         echo json_encode([
             "status" => "error",
-            "message" => "Pin update prepare failed"
+            "message" =>
+                "Pin update prepare failed"
         ]);
 
         exit;
@@ -473,7 +487,8 @@ if ($action === "set") {
 
         echo json_encode([
             "status" => "error",
-            "message" => "Pin update failed"
+            "message" =>
+                "Pin update failed"
         ]);
 
         $stmt->close();
@@ -505,9 +520,9 @@ if ($action === "set") {
 }
 
 
-/* ============================================================
+/* =========================================================
    UNKNOWN ACTION
-   ============================================================ */
+   ========================================================= */
 
 echo json_encode([
 
