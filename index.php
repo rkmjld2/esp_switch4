@@ -1,4 +1,3 @@
-```php
 <?php
 /*
  * ESP-SWITCH4
